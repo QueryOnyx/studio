@@ -1,3 +1,4 @@
+
 'use client';
 
 import { useState, useEffect } from 'react';
@@ -10,24 +11,22 @@ import { PlusCircle, Search, UserPlus, Loader2, List } from "lucide-react";
 import { useRouter } from 'next/navigation';
 import { useToast } from "@/hooks/use-toast";
 import Link from 'next/link';
+import { collection, query, where, getDocs, addDoc, serverTimestamp, limit } from "firebase/firestore"; // Import Firestore functions
+import { db } from "@/lib/firebase"; // Import Firebase db instance
+import { onAuthStateChanged } from 'firebase/auth';
+import { auth } from '@/lib/firebase';
 
-// Define interface for Game objects
+// Define interface for Game objects (matching Firestore structure)
 interface Game {
-  id: string;
+  id: string; // Firestore document ID
   name: string;
-  players: number;
+  players: string[]; // Store player UIDs
   maxPlayers: number;
-  status: 'waiting' | 'playing';
+  status: 'waiting' | 'playing' | 'finished'; // Added 'finished' status
   judgeType: 'human' | 'ai';
+  createdAt: any; // Use 'any' for Timestamp or ServerTimestamp
+  judgeId?: string; // Optional UID of the human judge
 }
-
-// Placeholder data - replace with actual data fetching from MongoDB
-const initialGames: Game[] = [
-  { id: 'g1', name: 'Beginner Banter', players: 2, maxPlayers: 3, status: 'waiting', judgeType: 'human' },
-  { id: 'g2', name: 'AI Arena', players: 1, maxPlayers: 3, status: 'waiting', judgeType: 'ai' },
-  { id: 'g3', name: 'Pro Players', players: 3, maxPlayers: 3, status: 'playing', judgeType: 'human' },
-  { id: 'g4', name: 'Casual Chat', players: 0, maxPlayers: 3, status: 'waiting', judgeType: 'ai' },
-];
 
 export default function LobbyPage() {
   const [games, setGames] = useState<Game[]>([]);
@@ -37,48 +36,86 @@ export default function LobbyPage() {
   const [filterJudge, setFilterJudge] = useState('all');
   const router = useRouter();
   const { toast } = useToast();
+  const [currentUserUid, setCurrentUserUid] = useState<string | null>(null);
 
+
+  // Listener for Auth State
+   useEffect(() => {
+       const unsubscribe = onAuthStateChanged(auth, (user) => {
+           if (user) {
+               setCurrentUserUid(user.uid);
+           } else {
+               setCurrentUserUid(null);
+               // Redirect handled by Header/Root page, but double-check if needed
+               // router.push('/auth');
+           }
+       });
+       return () => unsubscribe();
+   }, []);
+
+
+  // Fetch Games from Firestore
   useEffect(() => {
-    // Simulate fetching data
-    setIsLoading(true);
-    // --- Placeholder for MongoDB Fetch ---
-    // Replace with actual API call to fetch games
     const fetchGames = async () => {
-      await new Promise(resolve => setTimeout(resolve, 1000)); // Simulate network delay
-      setGames(initialGames);
-      setIsLoading(false);
-    };
-    fetchGames();
-    // --- End Placeholder ---
-
-    // Check authentication (simple example)
-    if (localStorage.getItem('isAuthenticated') !== 'true') {
+      setIsLoading(true);
+      try {
+        const gamesCollection = collection(db, "games");
+        // Query for games that are not finished
+        const q = query(gamesCollection, where("status", "!=", "finished"));
+        const querySnapshot = await getDocs(q);
+        const gamesData = querySnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        })) as Game[];
+        setGames(gamesData);
+      } catch (error) {
+        console.error("Error fetching games: ", error);
         toast({
-            title: "Access Denied",
-            description: "Please log in to access the lobby.",
-            variant: "destructive",
+          title: "Error",
+          description: "Could not fetch available games.",
+          variant: "destructive",
         });
-        router.push('/auth');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchGames();
+    // Consider adding a real-time listener later using onSnapshot
+  }, [toast]);
+
+
+  const handleJoinGame = async (gameId: string) => {
+    if (!currentUserUid) {
+        toast({ title: "Error", description: "You must be logged in to join.", variant: "destructive"});
+        return;
     }
-
-  }, [router, toast]);
-
-
-  const handleJoinGame = (gameId: string) => {
     const game = games.find(g => g.id === gameId);
-    if (game && game.players < game.maxPlayers && game.status === 'waiting') {
-       setIsLoading(true); // Show loading state
-        // --- Placeholder for joining game logic ---
-        console.log(`Attempting to join game ${gameId}`);
-         setTimeout(() => { // Simulate API call
+    if (game && game.players.length < game.maxPlayers && game.status === 'waiting') {
+        setIsLoading(true);
+        try {
+            // TODO: Add logic to actually add the player to the game document in Firestore
+            // This will likely involve updating the 'players' array.
+            // Need a Cloud Function or more complex client-side logic to handle this atomically.
+            // For now, just navigate.
+            console.log(`Joining game ${gameId} - Firestore update needed`);
+             // --- Placeholder: Add player UID to game in Firestore ---
+             // const gameDocRef = doc(db, "games", gameId);
+             // await updateDoc(gameDocRef, {
+             //    players: arrayUnion(currentUserUid) // Add current user UID
+             // });
+             // --- End Placeholder ---
+
             toast({
                 title: "Joining Game...",
                 description: `Connecting to ${game.name}.`,
             });
-            router.push(`/game/${gameId}`); // Navigate to game page
-            // No need to setLoading(false) as navigation occurs
-        }, 500);
-       // --- End Placeholder ---
+            router.push(`/game/${gameId}`);
+        } catch (error) {
+            console.error("Error joining game:", error);
+            toast({ title: "Join Failed", description: "Could not join the game.", variant: "destructive"});
+            setIsLoading(false);
+        }
     } else {
        toast({
         title: "Cannot Join Game",
@@ -88,38 +125,89 @@ export default function LobbyPage() {
     }
   };
 
-  const handleCreateGame = () => {
+  const handleCreateGame = async () => {
+     if (!currentUserUid) {
+         toast({ title: "Error", description: "You must be logged in to create.", variant: "destructive"});
+         return;
+     }
      setIsLoading(true);
-     // --- Placeholder for creating game logic ---
-     console.log("Attempting to create game");
-      setTimeout(() => { // Simulate API call
-          const newGameId = `g${Date.now()}`; // Simple unique ID generation
-          toast({
-              title: "Game Created",
-              description: "Redirecting to your new game...",
-          });
-          router.push(`/game/${newGameId}?new=true`); // Navigate to new game page
-          // No need to setLoading(false) as navigation occurs
-      }, 500);
-     // --- End Placeholder ---
+     try {
+        const gamesCollection = collection(db, "games");
+        const newGameData: Omit<Game, 'id'> = { // Omit 'id' as Firestore generates it
+            name: `Trial ${Math.random().toString(36).substring(2, 6)}`, // Random name
+            players: [currentUserUid], // Start with the creator
+            maxPlayers: 3,
+            status: 'waiting',
+            judgeType: 'human', // Default to human judge for now
+            createdAt: serverTimestamp(),
+            judgeId: currentUserUid, // Creator is the judge initially
+        };
+        const docRef = await addDoc(gamesCollection, newGameData);
+        toast({
+            title: "Game Created",
+            description: "Redirecting to your new game...",
+        });
+        router.push(`/game/${docRef.id}?new=true`); // Use the new document ID
+     } catch (error) {
+         console.error("Error creating game:", error);
+         toast({ title: "Creation Failed", description: "Could not create the game.", variant: "destructive"});
+          setIsLoading(false);
+     }
   };
 
-   const handleFindMatch = () => {
+   const handleFindMatch = async () => {
+     if (!currentUserUid) {
+         toast({ title: "Error", description: "You must be logged in.", variant: "destructive"});
+         return;
+     }
      setIsLoading(true);
-     toast({ title: "Searching for Match...", description: "Looking for available players..." });
-     // --- Placeholder for matchmaking logic ---
-     console.log("Attempting to find match");
-     setTimeout(() => { // Simulate API call
-        const availableGame = games.find(g => g.status === 'waiting' && g.players < g.maxPlayers);
-        setIsLoading(false);
-        if (availableGame) {
-           toast({ title: "Match Found!", description: `Joining game ${availableGame.name}...` });
-           router.push(`/game/${availableGame.id}`);
+     toast({ title: "Searching for Match...", description: "Looking for available games..." });
+
+     try {
+         const gamesCollection = collection(db, "games");
+         // Query for waiting games with space, not created by the current user
+         const q = query(
+             gamesCollection,
+             where("status", "==", "waiting"),
+             where("players", "!=", null), // Ensure players array exists
+              // Firestore doesn't directly support "array length < maxPlayers" or "array not contains UID" in a single query easily.
+              // Fetch candidates and filter client-side, or use a Cloud Function.
+              limit(10) // Get a few candidates
+            );
+
+         const querySnapshot = await getDocs(q);
+         let foundGame: Game | null = null;
+
+         for (const doc of querySnapshot.docs) {
+            const game = { id: doc.id, ...doc.data() } as Game;
+             // Check if game has space AND current user is not already in it
+            if (game.players.length < game.maxPlayers && !game.players.includes(currentUserUid)) {
+                foundGame = game;
+                break; // Found a suitable game
+            }
+         }
+
+
+        if (foundGame) {
+           // Join the found game (similar logic to handleJoinGame)
+            console.log(`Joining game ${foundGame.id} via matchmaking - Firestore update needed`);
+             // --- Placeholder: Add player UID to game in Firestore ---
+             // const gameDocRef = doc(db, "games", foundGame.id);
+             // await updateDoc(gameDocRef, {
+             //    players: arrayUnion(currentUserUid)
+             // });
+             // --- End Placeholder ---
+           toast({ title: "Match Found!", description: `Joining game ${foundGame.name}...` });
+           router.push(`/game/${foundGame.id}`);
         } else {
-            toast({ title: "No Match Found", description: "No suitable games available. Try creating one!", variant: "destructive" });
+            toast({ title: "No Match Found", description: "No suitable games available. Try creating one!", variant: "default" });
+             setIsLoading(false);
         }
-     }, 1500);
-     // --- End Placeholder ---
+     } catch (error) {
+        console.error("Error finding match:", error);
+        toast({ title: "Matchmaking Failed", description: "Could not search for games.", variant: "destructive"});
+         setIsLoading(false);
+     }
    };
 
   const filteredGames = games.filter(game =>
@@ -138,10 +226,10 @@ export default function LobbyPage() {
             <CardDescription>Join an existing game or create your own trial.</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col md:flex-row gap-4">
-            <Button onClick={handleCreateGame} disabled={isLoading} className="flex-1">
+            <Button onClick={handleCreateGame} disabled={isLoading || !currentUserUid} className="flex-1">
                 {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <PlusCircle className="mr-2 h-4 w-4" />} Create Game
             </Button>
-            <Button onClick={handleFindMatch} variant="secondary" disabled={isLoading} className="flex-1">
+            <Button onClick={handleFindMatch} variant="secondary" disabled={isLoading || !currentUserUid} className="flex-1">
                  {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserPlus className="mr-2 h-4 w-4" />} Find Match
             </Button>
           </CardContent>
@@ -205,9 +293,9 @@ export default function LobbyPage() {
                  filteredGames.map((game) => (
                 <TableRow key={game.id}>
                   <TableCell className="font-medium">{game.name}</TableCell>
-                  <TableCell>{game.players}/{game.maxPlayers}</TableCell>
+                  <TableCell>{game.players?.length || 0}/{game.maxPlayers}</TableCell>
                   <TableCell>
-                    <span className={`px-2 py-1 rounded-full text-xs ${game.status === 'waiting' ? 'bg-green-700 text-green-100' : 'bg-yellow-700 text-yellow-100'}`}>
+                    <span className={`px-2 py-1 rounded-full text-xs ${game.status === 'waiting' ? 'bg-green-700 text-green-100' : game.status === 'playing' ? 'bg-yellow-700 text-yellow-100' : 'bg-red-700 text-red-100'}`}>
                         {game.status.charAt(0).toUpperCase() + game.status.slice(1)}
                     </span>
                   </TableCell>
@@ -217,7 +305,8 @@ export default function LobbyPage() {
                       variant="outline"
                       size="sm"
                       onClick={() => handleJoinGame(game.id)}
-                      disabled={game.status !== 'waiting' || game.players >= game.maxPlayers || isLoading}
+                      disabled={game.status !== 'waiting' || (game.players?.length || 0) >= game.maxPlayers || isLoading || !currentUserUid || game.players?.includes(currentUserUid)}
+                      title={game.players?.includes(currentUserUid || '') ? "You are already in this game" : ""}
                     >
                       Join
                     </Button>

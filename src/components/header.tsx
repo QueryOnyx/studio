@@ -1,3 +1,4 @@
+
 'use client';
 
 import Link from 'next/link';
@@ -6,53 +7,66 @@ import { User, LogOut, Users, Sword } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
+import { onAuthStateChanged, signOut } from "firebase/auth"; // Import Firebase auth functions
+import { auth } from "@/lib/firebase"; // Import Firebase auth instance
+import type { User as FirebaseUser } from "firebase/auth"; // Import Firebase User type
+
 
 export default function Header() {
-  // Initialize state to null/undefined to avoid hydration mismatch
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
-  const [username, setUsername] = useState<string | null>(null);
-  const [isClient, setIsClient] = useState(false); // Track if running on client
+  // Use FirebaseUser type or null
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [isLoading, setIsLoading] = useState(true); // Still useful for initial check
   const router = useRouter();
   const pathname = usePathname();
 
   // This effect runs only on the client after hydration
   useEffect(() => {
-    setIsClient(true); // Component has mounted on the client
+    setIsLoading(true);
+    // Use Firebase's onAuthStateChanged listener
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser); // currentUser is null if not logged in
+      setIsLoading(false); // Update loading state once auth state is known
 
-    // Check auth status from localStorage
-    const storedAuth = localStorage.getItem('isAuthenticated');
-    const storedUser = localStorage.getItem('username');
-
-    if (storedAuth === 'true' && storedUser) {
-      setIsAuthenticated(true);
-      setUsername(storedUser);
-      // If authenticated and currently on the root or auth page, redirect to lobby
-      if (pathname === '/' || pathname === '/auth') {
-        router.push('/lobby');
+      // Redirect logic based on auth state and current path
+      if (currentUser) {
+        // User is signed in
+        if (pathname === '/' || pathname === '/auth') {
+            // If logged in and on root or auth page, redirect to lobby
+            router.replace('/lobby');
+        }
+      } else {
+        // No user is signed in.
+        if (pathname !== '/auth') {
+            // If not logged in and not on auth page, redirect to auth
+             router.replace('/auth');
+        }
       }
-    } else {
-      setIsAuthenticated(false);
-      setUsername(null);
-      // If not authenticated and not already on auth page, redirect
-      // Ensure we are not already on the auth page to prevent infinite loop
-      if (pathname !== '/auth') {
-        router.push('/auth');
-      }
-    }
-  }, [pathname, router]); // Rerun if pathname or router changes
+    });
+
+    // Cleanup subscription on unmount
+    return () => unsubscribe();
+     // Only run on mount and unmount
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router]); // Add router to dependencies
 
 
-  const handleLogout = () => {
-     // Simulate logout
-     localStorage.removeItem('isAuthenticated');
-     localStorage.removeItem('username');
-     setIsAuthenticated(false);
-     setUsername(null);
-     router.push('/auth'); // Redirect to auth page on logout
+  const handleLogout = async () => {
+     try {
+         await signOut(auth); // Sign out using Firebase
+         // setUser(null) will be handled by onAuthStateChanged
+         router.push('/auth'); // Redirect to auth page on logout
+     } catch (error) {
+        console.error("Logout Error:", error);
+        // Optionally show a toast message for logout failure
+     }
   };
 
   // Function to determine if a link is active
   const isActive = (href: string) => pathname === href;
+
+  // Determine authentication status based on user object
+  const isAuthenticated = !!user;
+  const username = user?.displayName || user?.email; // Use displayName or fallback to email
 
   return (
     <header className="bg-card text-card-foreground shadow-md sticky top-0 z-50">
@@ -61,8 +75,8 @@ export default function Header() {
           Triad Trials <Sword className="inline h-5 w-5 ml-1" />
         </Link>
         <div className="flex items-center gap-2 md:gap-4">
-          {/* Only render buttons after client-side check is complete and user is authenticated */}
-          {isClient && isAuthenticated && username ? (
+          {/* Only render buttons after initial loading is false and user is authenticated */}
+          {!isLoading && isAuthenticated && username ? (
             <>
               <Button
                 variant={isActive('/lobby') ? 'secondary' : 'ghost'} // Active style
@@ -87,16 +101,16 @@ export default function Header() {
                   )}
                  asChild>
                 <Link href="/profile">
-                  <User /> <span className="hidden md:inline">{username}</span>
+                  <User /> <span className="hidden md:inline truncate max-w-[100px]">{username}</span>
                 </Link>
               </Button>
               <Button variant="outline" size="sm" onClick={handleLogout} className="flex items-center gap-2">
                 <LogOut /> <span className="hidden md:inline">Logout</span>
               </Button>
             </>
-          ) : null }
-          {/* Optionally show a placeholder or nothing while loading client state */}
-           {!isClient && <div className="h-9 w-32"></div>} {/* Placeholder to prevent layout shift */}
+          ) : isLoading ? (
+             <div className="h-9 w-48 animate-pulse bg-muted rounded-md"></div> // Placeholder while loading
+          ) : null /* Render nothing if not loading and not authenticated */ }
         </div>
       </nav>
     </header>

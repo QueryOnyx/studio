@@ -1,34 +1,33 @@
+
 'use client';
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Loader2 } from 'lucide-react';
+import { onAuthStateChanged } from 'firebase/auth';
+import { auth } from '@/lib/firebase';
 
 export default function Home() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(true);
-  const [redirectTarget, setRedirectTarget] = useState<string | null>(null);
 
   useEffect(() => {
-    // Check authentication status from localStorage
-    const isAuthenticated = localStorage.getItem('isAuthenticated') === 'true';
+    // Use onAuthStateChanged to determine where to redirect
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        // If logged in, redirect to the lobby
+        router.replace('/lobby');
+      } else {
+        // If not logged in, redirect to the auth page
+        router.replace('/auth');
+      }
+      // Keep loading until the redirect actually happens or state is confirmed
+      // setIsLoading(false); // Don't set false immediately, let redirect finish
+    });
 
-    if (isAuthenticated) {
-      // If logged in, redirect to the lobby
-      setRedirectTarget('/lobby');
-    } else {
-      // If not logged in, redirect to the auth page
-      setRedirectTarget('/auth');
-    }
-  }, []); // Run only once on mount
-
-  useEffect(() => {
-    if (redirectTarget) {
-      router.replace(redirectTarget);
-      // Keep loading state true during redirection to avoid flashing content
-      // setIsLoading(false); // Don't set to false immediately
-    }
-  }, [redirectTarget, router]);
+    // Cleanup subscription on unmount
+    return () => unsubscribe();
+  }, [router]); // Run only once on mount
 
 
   // Show a loading indicator while determining the redirect target and during redirection

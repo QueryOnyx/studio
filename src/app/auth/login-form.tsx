@@ -1,3 +1,4 @@
+
 'use client';
 
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -14,14 +15,15 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { useRouter } from 'next/navigation'; // Use next/navigation for App Router
+import { useRouter } from 'next/navigation';
 import { useState } from "react";
 import { Loader2 } from "lucide-react";
+import { signInWithEmailAndPassword } from "firebase/auth";
+import { auth } from "@/lib/firebase"; // Import Firebase auth instance
 
 const formSchema = z.object({
-  username: z.string().min(3, {
-    message: "Username must be at least 3 characters.",
-  }),
+  // Use email for Firebase login
+  email: z.string().email({ message: "Invalid email address." }),
   password: z.string().min(6, {
     message: "Password must be at least 6 characters.",
   }),
@@ -39,7 +41,7 @@ export default function LoginForm({ onSuccess }: LoginFormProps) {
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      username: "",
+      email: "", // Default to email
       password: "",
     },
   });
@@ -49,48 +51,48 @@ export default function LoginForm({ onSuccess }: LoginFormProps) {
     form.clearErrors(); // Clear previous errors
 
     try {
-       const response = await fetch('/api/auth/login', {
-         method: 'POST',
-         headers: {
-           'Content-Type': 'application/json',
-         },
-         body: JSON.stringify({
-           username: values.username,
-           password: values.password,
-         }),
-       });
+      // Sign in with Firebase
+      const userCredential = await signInWithEmailAndPassword(auth, values.email, values.password);
+      const user = userCredential.user;
 
-       const data = await response.json();
-
-      if (response.ok) {
+      if (user) {
         toast({
           title: "Login Successful",
-          description: `Welcome back, ${values.username}!`,
+          description: `Welcome back!`, // Username is not directly available here, will be handled by Header
         });
-        // Store auth state (replace with proper session/token management later)
-        localStorage.setItem('isAuthenticated', 'true');
-        localStorage.setItem('username', values.username);
-        // Optionally store other user details if needed by the app immediately
-        // localStorage.setItem('userId', data.user._id); // Example if ID is returned
-
+        // No need for localStorage, auth state is handled by Firebase SDK and Header
         onSuccess(); // Call the onSuccess prop (might be used for UI updates)
         router.push('/lobby'); // Redirect to lobby after successful login
       } else {
-        // Handle login failure
-        toast({
-          title: "Login Failed",
-          description: data.message || "Invalid username or password.",
-          variant: "destructive",
-        });
-        // Set errors on both fields for generic invalid credentials message
-        form.setError("username", { type: "manual", message: " " }); // Empty message to just show red border
-        form.setError("password", { type: "manual", message: data.message || "Invalid username or password." });
+        // This case should technically not happen if signInWithEmailAndPassword resolves
+        throw new Error("Login failed: No user found.");
       }
-    } catch (error) {
-        console.error("Login Network Error:", error);
+    } catch (error: any) {
+        console.error("Firebase Login Error:", error);
+        let errorMessage = "An unexpected error occurred during login.";
+        // Handle specific Firebase error codes
+        switch (error.code) {
+            case 'auth/invalid-email':
+                errorMessage = "Invalid email format.";
+                form.setError("email", { type: "manual", message: errorMessage });
+                break;
+            case 'auth/user-disabled':
+                errorMessage = "This account has been disabled.";
+                break;
+            case 'auth/user-not-found':
+            case 'auth/invalid-credential': // Covers wrong password and non-existent user
+                 errorMessage = "Invalid email or password.";
+                 form.setError("email", { type: "manual", message: " " }); // Clear error for specific field
+                 form.setError("password", { type: "manual", message: errorMessage });
+                 break;
+            default:
+                // Generic error for other issues
+                errorMessage = "Login failed. Please try again.";
+                break;
+        }
         toast({
             title: "Login Failed",
-            description: "Could not connect to the server. Please try again later.",
+            description: errorMessage,
             variant: "destructive",
         });
     } finally {
@@ -103,12 +105,12 @@ export default function LoginForm({ onSuccess }: LoginFormProps) {
       <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
         <FormField
           control={form.control}
-          name="username"
+          name="email" // Change name to email
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Username</FormLabel>
+              <FormLabel>Email</FormLabel> {/* Change label */}
               <FormControl>
-                <Input placeholder="Enter your username" {...field} />
+                <Input type="email" placeholder="Enter your email" {...field} />
               </FormControl>
               <FormMessage />
             </FormItem>

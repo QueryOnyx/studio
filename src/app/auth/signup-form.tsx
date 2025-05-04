@@ -1,3 +1,4 @@
+
 'use client';
 
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -16,6 +17,9 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { useState } from "react";
 import { Loader2 } from "lucide-react";
+import { createUserWithEmailAndPassword, updateProfile } from "firebase/auth";
+import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { auth, db } from "@/lib/firebase"; // Import Firebase auth and db instances
 
 const formSchema = z.object({
   username: z.string().min(3, {
@@ -37,7 +41,7 @@ interface SignupFormProps {
 
 export default function SignupForm({ onSuccess }: SignupFormProps) {
   const { toast } = useToast();
-   const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -54,69 +58,59 @@ export default function SignupForm({ onSuccess }: SignupFormProps) {
     form.clearErrors(); // Clear previous errors
 
     try {
-      const response = await fetch('/api/auth/signup', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          username: values.username,
-          email: values.email,
-          password: values.password,
-        }),
+      // 1. Create user with Firebase Auth
+      const userCredential = await createUserWithEmailAndPassword(auth, values.email, values.password);
+      const user = userCredential.user;
+
+      // 2. Update Firebase Auth profile with username (optional but good practice)
+      await updateProfile(user, { displayName: values.username });
+
+      // 3. Create user document in Firestore
+      const userDocRef = doc(db, "users", user.uid); // Use UID as document ID
+      await setDoc(userDocRef, {
+        username: values.username,
+        email: values.email,
+        createdAt: serverTimestamp(), // Use Firestore server timestamp
+        joinDate: serverTimestamp(), // Use Firestore server timestamp
+        gamesPlayed: 0,
+        winRate: 0,
+        // Add other default fields if needed
       });
 
-      const data = await response.json();
+      toast({
+        title: "Signup Successful",
+        description: "Your account has been created. Please log in.",
+      });
+      onSuccess(); // Switch to login tab
 
-      if (response.ok) {
-        toast({
-          title: "Signup Successful",
-          description: "Your account has been created. Please log in.",
-        });
-        onSuccess(); // Switch to login tab
-      } else {
-        // Handle specific errors from the API
-        if (response.status === 409) { // Conflict (user exists)
-           toast({
-             title: "Signup Failed",
-             description: data.message || "Username or email might already be taken.",
-             variant: "destructive",
-           });
-           if (data.message?.toLowerCase().includes('username')) {
-                form.setError("username", { type: "manual", message: data.message });
-           } else if (data.message?.toLowerCase().includes('email')) {
-                form.setError("email", { type: "manual", message: data.message });
-           } else {
-                 form.setError("username", { type: "manual", message: "Username or email might be taken" });
-           }
-        } else if (response.status === 400) { // Bad Request (validation)
-             toast({
-                title: "Signup Failed",
-                description: data.message || "Please check your input.",
-                variant: "destructive",
-            });
-            // Optionally display specific field errors from data.errors
-             if (data.errors) {
-                 data.errors.forEach((err: any) => {
-                    if(err.path && err.path.length > 0){
-                        form.setError(err.path[0] as keyof z.infer<typeof formSchema>, { type: 'manual', message: err.message });
-                    }
-                 });
-             }
-        }
-        else {
-          toast({
-            title: "Signup Failed",
-            description: data.message || "An unexpected error occurred.",
-            variant: "destructive",
-          });
-        }
-      }
-    } catch (error) {
-      console.error("Signup Network Error:", error);
+    } catch (error: any) {
+      console.error("Firebase Signup Error:", error);
+      let errorMessage = "An unexpected error occurred during signup.";
+      // Handle specific Firebase error codes
+       switch (error.code) {
+           case 'auth/email-already-in-use':
+               errorMessage = "This email address is already in use.";
+               form.setError("email", { type: "manual", message: errorMessage });
+               break;
+           case 'auth/invalid-email':
+               errorMessage = "Invalid email format.";
+               form.setError("email", { type: "manual", message: errorMessage });
+               break;
+           case 'auth/operation-not-allowed':
+               errorMessage = "Email/password accounts are not enabled.";
+               break;
+           case 'auth/weak-password':
+               errorMessage = "Password is too weak. It must be at least 6 characters.";
+                form.setError("password", { type: "manual", message: errorMessage });
+               break;
+           default:
+               // Check Firestore errors? (Less likely here)
+               errorMessage = "Signup failed. Please try again.";
+               break;
+       }
       toast({
         title: "Signup Failed",
-        description: "Could not connect to the server. Please try again later.",
+        description: errorMessage,
         variant: "destructive",
       });
     } finally {

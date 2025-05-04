@@ -1,6 +1,7 @@
+
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -10,96 +11,55 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { Loader2, Send, Crown, Users, BrainCircuit, UserCheck, HelpCircle } from 'lucide-react'; // Added icons
+import { Loader2, Send, Crown, Users, BrainCircuit, UserCheck, HelpCircle, LogOut } from 'lucide-react';
 import { useToast } from "@/hooks/use-toast";
-import { generateSubject } from '@/ai/flows/ai-subject-generation'; // Import AI function
-import { evaluateAccuracy } from '@/ai/flows/ai-accuracy-evaluation'; // Import AI function
+import { generateSubject } from '@/ai/flows/ai-subject-generation';
+import { evaluateAccuracy } from '@/ai/flows/ai-accuracy-evaluation';
+import { doc, getDoc, setDoc, updateDoc, onSnapshot, collection, addDoc, serverTimestamp, Timestamp, query, orderBy, limit, arrayUnion, arrayRemove } from "firebase/firestore";
+import { db, auth } from "@/lib/firebase";
+import { onAuthStateChanged } from 'firebase/auth';
+import type { User as FirebaseUser } from 'firebase/auth';
 
 // --- Types ---
 type PlayerRole = 'judge' | 'player1' | 'player2' | 'spectator';
 type GamePhase = 'waiting' | 'subject-selection' | 'discussion' | 'answering' | 'evaluation' | 'finished';
 
+// Represents player data stored within the game document or potentially linked
 interface Player {
-  id: string;
-  username: string;
+  uid: string; // Firebase UID
+  username: string; // Denormalized username
   role: PlayerRole;
-  isReady?: boolean;
-  avatarUrl?: string;
+  avatarUrl?: string; // Denormalized avatar URL
+  // isReady? : boolean; // Might not be needed if using Firestore presence
 }
 
-interface Message {
-  id: string;
-  sender: string; // username or 'System' or 'AI Judge'
-  text: string;
-  timestamp: number;
-}
-
+// Represents the structure of the game document in Firestore
 interface GameState {
-  id: string;
+  id: string; // Firestore document ID
   name: string;
-  players: Player[];
+  players: Player[]; // Array of player objects
   currentRound: number;
   maxRounds: number;
   phase: GamePhase;
   judgeType: 'human' | 'ai';
+  judgeId?: string; // UID of the human judge
   currentSubject: string | null;
   currentAnswer: string | null;
-  messages: Message[];
-  scores: Record<string, number>; // Player ID to score
+  scores: Record<string, number>; // Player UID to score
   evaluationResult?: { score: number; justification: string };
+  createdAt: Timestamp; // Firestore Timestamp
+  lastUpdated: Timestamp | null;
 }
 
-// --- Mock Data & Functions (Replace with MongoDB/WebSockets) ---
+// Represents the structure of a message document in the 'messages' subcollection
+interface Message {
+  id: string; // Firestore document ID
+  senderUid: string; // UID of the sender ('system' or 'ai-judge' for special messages)
+  senderUsername: string; // Denormalized username or 'System'/'AI Judge'
+  text: string;
+  timestamp: Timestamp | null; // Firestore Timestamp
+}
 
-const MOCK_NAMES = ["Alex", "Jamie", "Casey", "Riley", "Jordan"];
-
-// Function to get the current user's info (replace with real auth)
-const getCurrentUserInfo = (): { userId: string, username: string } => {
-    const username = localStorage.getItem('username') || `User_${Math.random().toString(36).substring(7)}`;
-    // Use username as ID for simplicity in mock setup
-    return { userId: username, username: username };
-};
-
-const createMockGameState = (gameId: string, isNew: boolean, judgeTypePref: 'human' | 'ai' = 'human'): GameState => {
-  const currentUserInfo = getCurrentUserInfo();
-  const initialPlayer: Player = {
-    id: currentUserInfo.userId,
-    username: currentUserInfo.username,
-    // Assign role based on whether it's a new game or joining
-    role: isNew ? judgeTypePref === 'human' ? 'judge' : 'player1' : 'spectator', // Assign judge if creating, otherwise spectator initially
-    isReady: false,
-    avatarUrl: `https://i.pravatar.cc/150?u=${currentUserInfo.userId}`
-  };
-
-  // Add some mock players if joining an existing game (or for testing)
-   const mockPlayers = !isNew ? [
-       { id: 'bot1', username: 'Bot Alice', role: judgeTypePref === 'human' ? 'player1' : 'judge', isReady: true, avatarUrl: 'https://i.pravatar.cc/150?u=bot1' },
-       { id: 'bot2', username: 'Bot Bob', role: 'player2', isReady: true, avatarUrl: 'https://i.pravatar.cc/150?u=bot2' }
-    ] : [];
-
-
-  return {
-    id: gameId,
-    name: `Trial ${gameId.substring(0, 4)}`,
-    players: [initialPlayer, ...mockPlayers].slice(0, 3), // Ensure max 3 players
-    currentRound: 0,
-    maxRounds: 10,
-    phase: isNew ? 'waiting' : mockPlayers.length >= 2 ? 'subject-selection' : 'waiting', // Start selecting if full
-    judgeType: isNew ? judgeTypePref : initialGamesData[gameId]?.judgeType || 'human', // Get judge type from mock or default
-    currentSubject: null,
-    currentAnswer: null,
-    messages: [{ id: 'm0', sender: 'System', text: 'Welcome to the game!', timestamp: Date.now() }],
-    scores: {},
-  };
-};
-
-// Simulate some existing games data (like in lobby)
-const initialGamesData: Record<string, Partial<GameState>> = {
-    'g1': { judgeType: 'human', name: 'Beginner Banter' },
-    'g2': { judgeType: 'ai', name: 'AI Arena' },
-    'g3': { judgeType: 'human', name: 'Pro Players' },
-    'g4': { judgeType: 'ai', name: 'Casual Chat' },
-};
 
 // --- Component ---
 
@@ -108,157 +68,284 @@ export default function GamePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { toast } = useToast();
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
+
 
   const gameId = params.gameId as string;
   const isNewGame = searchParams.get('new') === 'true';
 
   const [gameState, setGameState] = useState<GameState | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [currentUserInfo, setCurrentUserInfo] = useState<{ userId: string, username: string } | null>(null);
+  const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
+  const [currentUserProfile, setCurrentUserProfile] = useState<{ username: string; avatarUrl?: string } | null>(null);
   const [messageInput, setMessageInput] = useState('');
   const [subjectInput, setSubjectInput] = useState('');
   const [answerInput, setAnswerInput] = useState('');
   const [isAiGenerating, setIsAiGenerating] = useState(false);
   const [isAiEvaluating, setIsAiEvaluating] = useState(false);
+  const [isLeaving, setIsLeaving] = useState(false);
 
-  const currentUserRole = gameState?.players.find(p => p.id === currentUserInfo?.userId)?.role;
+
+  const currentUserRole = gameState?.players.find(p => p.uid === currentUser?.uid)?.role;
   const isJudge = currentUserRole === 'judge';
   const isPlayer = currentUserRole === 'player1' || currentUserRole === 'player2';
   const judgePlayer = gameState?.players.find(p => p.role === 'judge');
 
   // --- Effects ---
 
-  // Initial Load & Authentication Check
-  useEffect(() => {
-    const userInfo = getCurrentUserInfo();
-    if (!localStorage.getItem('isAuthenticated')) {
-      toast({ title: "Access Denied", description: "Please log in.", variant: "destructive" });
-      router.push('/auth');
-      return;
-    }
-    setCurrentUserInfo(userInfo);
-
-    setIsLoading(true);
-    setError(null);
-    console.log(`Loading game: ${gameId}, New: ${isNewGame}`);
-
-    // --- Placeholder for Fetching/Creating Game State (replace with API/WebSockets) ---
-    const loadGame = async () => {
-      await new Promise(resolve => setTimeout(resolve, 500)); // Simulate delay
-      try {
-         // Simulate fetching or creating
-        const existingGame = initialGamesData[gameId]; // Check if ID exists in mock lobby data
-        const judgeTypePref = existingGame?.judgeType || (isNewGame ? 'human' : 'human'); // Default to human if not specified
-        let loadedState = createMockGameState(gameId, isNewGame, judgeTypePref);
-
-        // If joining, try to assign a role if spectator
-        if (!isNewGame && loadedState.players.find(p => p.id === userInfo.userId)?.role === 'spectator') {
-           const availablePlayerRole = loadedState.players.some(p => p.role === 'player1') ? 'player2' : 'player1';
-           const judgeExists = loadedState.players.some(p => p.role === 'judge');
-
-           if (loadedState.players.length < 3) {
-               if (!judgeExists && loadedState.judgeType === 'human') {
-                   // Assign as judge if human judge needed and no judge exists
-                   loadedState.players = loadedState.players.map(p => p.id === userInfo.userId ? { ...p, role: 'judge' } : p);
-                   addSystemMessage(loadedState, `${userInfo.username} is now the Judge.`);
-               } else if (availablePlayerRole === 'player1' || availablePlayerRole === 'player2') {
-                   // Assign as player if spot available
-                    loadedState.players = loadedState.players.map(p => p.id === userInfo.userId ? { ...p, role: availablePlayerRole } : p);
-                    addSystemMessage(loadedState, `${userInfo.username} joined as ${availablePlayerRole}.`);
+   // Auth State Listener & Profile Fetch
+   useEffect(() => {
+       const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
+           if (user) {
+               setCurrentUser(user);
+               // Fetch user profile for username/avatar
+               try {
+                   const userDocRef = doc(db, "users", user.uid);
+                   const userDocSnap = await getDoc(userDocRef);
+                   if (userDocSnap.exists()) {
+                       const data = userDocSnap.data();
+                       setCurrentUserProfile({
+                           username: data.username || user.displayName || `User_${user.uid.substring(0, 4)}`,
+                           avatarUrl: data.avatarUrl || user.photoURL || `https://i.pravatar.cc/150?u=${user.uid}`
+                       });
+                   } else {
+                        // Handle case where profile might not exist yet
+                        setCurrentUserProfile({ username: user.displayName || `User_${user.uid.substring(0, 4)}`, avatarUrl: `https://i.pravatar.cc/150?u=${user.uid}` });
+                   }
+               } catch (profileError) {
+                   console.error("Error fetching user profile:", profileError);
+                   // Use fallback profile
+                   setCurrentUserProfile({ username: user.displayName || `User_${user.uid.substring(0, 4)}`, avatarUrl: `https://i.pravatar.cc/150?u=${user.uid}` });
+                   toast({title: "Warning", description: "Could not load full profile details.", variant:"default"})
                }
+           } else {
+               setCurrentUser(null);
+               setCurrentUserProfile(null);
+               toast({ title: "Access Denied", description: "Please log in.", variant: "destructive" });
+               router.push('/auth');
            }
+       });
+       return () => unsubscribeAuth();
+   }, [router, toast]);
+
+
+   // Game State Listener
+    useEffect(() => {
+        if (!gameId || !currentUser || !currentUserProfile) {
+            setIsLoading(currentUser === null || currentUserProfile === null); // Keep loading if user data isn't ready
+            return; // Don't proceed without gameId and user info
         }
 
-         // Check if game should start
-         if (loadedState.players.length === 3 && loadedState.phase === 'waiting') {
-            loadedState.phase = 'subject-selection';
-            loadedState.currentRound = 1;
-            addSystemMessage(loadedState, `Round 1 begins! Waiting for the subject.`);
-         }
+        setIsLoading(true);
+        setError(null);
+        console.log(`Setting up listener for game: ${gameId}`);
 
-        setGameState(loadedState);
-      } catch (err) {
-        console.error("Failed to load game:", err);
-        setError("Could not load game data. It might not exist or there was a connection issue.");
-        toast({ title: "Error", description: "Failed to load game.", variant: "destructive" });
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    loadGame();
-    // --- End Placeholder ---
+        const gameDocRef = doc(db, "games", gameId);
 
-    // Add WebSocket listener setup here in a real app
-    // e.g., socket.on('gameStateUpdate', (newState) => setGameState(newState));
+        const unsubscribeGame = onSnapshot(gameDocRef, async (docSnap) => {
+            if (docSnap.exists()) {
+                let loadedState = { id: docSnap.id, ...docSnap.data() } as GameState;
 
-    return () => {
-      // Clean up WebSocket listeners here
-      // e.g., socket.off('gameStateUpdate');
-    };
-  }, [gameId, isNewGame, router, toast]);
+                // --- Handle Joining/Role Assignment ---
+                const playerIndex = loadedState.players.findIndex(p => p.uid === currentUser.uid);
+                let playerNeedsAdding = playerIndex === -1;
+                let shouldUpdateFirestore = false;
+                let systemMessage = '';
+
+                if (playerNeedsAdding && loadedState.status === 'waiting' && loadedState.players.length < loadedState.maxPlayers) {
+                    const newPlayer: Player = {
+                        uid: currentUser.uid,
+                        username: currentUserProfile.username,
+                        avatarUrl: currentUserProfile.avatarUrl,
+                        role: 'spectator', // Start as spectator, assign role below
+                    };
+
+                    const judgeExists = loadedState.players.some(p => p.role === 'judge');
+                    const player1Exists = loadedState.players.some(p => p.role === 'player1');
+
+                    if (loadedState.judgeType === 'human' && !judgeExists) {
+                        newPlayer.role = 'judge';
+                        loadedState.judgeId = currentUser.uid; // Assign judgeId
+                        systemMessage = `${newPlayer.username} joined as the Judge.`;
+                    } else if (!player1Exists) {
+                        newPlayer.role = 'player1';
+                         systemMessage = `${newPlayer.username} joined as Player 1.`;
+                    } else {
+                        newPlayer.role = 'player2';
+                         systemMessage = `${newPlayer.username} joined as Player 2.`;
+                    }
+
+                    loadedState.players.push(newPlayer);
+                    shouldUpdateFirestore = true;
+                     console.log("Adding player:", newPlayer);
+                }
+
+                // --- Handle Game Start ---
+                if (loadedState.players.length === loadedState.maxPlayers && loadedState.phase === 'waiting') {
+                    loadedState.phase = 'subject-selection';
+                    loadedState.currentRound = 1;
+                    loadedState.currentSubject = null; // Ensure subject is cleared
+                    loadedState.currentAnswer = null; // Ensure answer is cleared
+                    loadedState.evaluationResult = undefined; // Ensure evaluation is cleared
+                     systemMessage = systemMessage ? `${systemMessage} Game starting! Round 1 begins.` : `Game starting! Round 1 begins. Waiting for the subject.`;
+                    shouldUpdateFirestore = true;
+                    console.log("Starting game, round 1");
+                }
+
+                setGameState(loadedState);
+
+                // Perform Firestore update if needed AFTER setting local state to avoid race conditions
+                if (shouldUpdateFirestore) {
+                    try {
+                        await updateDoc(gameDocRef, {
+                            players: loadedState.players,
+                            phase: loadedState.phase,
+                            currentRound: loadedState.currentRound,
+                            judgeId: loadedState.judgeId, // Update judgeId if assigned
+                            lastUpdated: serverTimestamp(),
+                             // Clear these fields on round start
+                            ...(loadedState.phase === 'subject-selection' && {
+                                currentSubject: null,
+                                currentAnswer: null,
+                                evaluationResult: null, // Use null in Firestore
+                            }),
+                        });
+                        if (systemMessage) {
+                             await addSystemMessage(gameId, systemMessage);
+                        }
+                    } catch (updateError) {
+                        console.error("Error updating game state:", updateError);
+                         toast({title: "Error", description: "Failed to update game state.", variant: "destructive"});
+                         // Potentially revert local state or handle error
+                    }
+                }
+
+            } else {
+                setError(`Game with ID "${gameId}" not found.`);
+                setGameState(null);
+                toast({ title: "Error", description: "Game not found.", variant: "destructive" });
+            }
+            setIsLoading(false);
+        }, (error) => {
+            console.error("Error listening to game state:", error);
+            setError("Failed to load game data due to a connection issue.");
+            setIsLoading(false);
+            toast({ title: "Error", description: "Failed to sync game state.", variant: "destructive" });
+        });
+
+
+        // --- Messages Listener ---
+        const messagesColRef = collection(db, "games", gameId, "messages");
+        const qMessages = query(messagesColRef, orderBy("timestamp", "asc"), limit(100)); // Get latest 100
+
+        const unsubscribeMessages = onSnapshot(qMessages, (querySnapshot) => {
+            const msgs = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Message[];
+            setMessages(msgs);
+        }, (error) => {
+             console.error("Error listening to messages:", error);
+             toast({ title: "Error", description: "Failed to load chat messages.", variant: "destructive" });
+        });
+
+
+        return () => {
+            console.log("Unsubscribing from game and messages listeners");
+            unsubscribeGame();
+            unsubscribeMessages();
+        };
+
+    }, [gameId, currentUser, currentUserProfile, router, toast]); // Add currentUserProfile dependency
+
+
+    // Scroll to bottom when new messages arrive
+    useEffect(() => {
+       if (scrollAreaRef.current) {
+          // Simple scroll to bottom - consider more nuanced approaches if needed
+          // Use `scrollHeight` to scroll all the way down
+           const scrollElement = scrollAreaRef.current.querySelector('div[style*="position: relative;"]'); // Adjust selector based on ScrollArea implementation details
+           if (scrollElement) {
+                scrollElement.scrollTop = scrollElement.scrollHeight;
+           }
+        }
+    }, [messages]); // Run when messages change
 
 
   // --- Actions ---
 
-  // Helper to add system messages (modify for WebSocket emit)
-  const addSystemMessage = (state: GameState, text: string): GameState => {
-      const newMessage: Message = {
-          id: `m${Date.now()}`,
-          sender: 'System',
-          text,
-          timestamp: Date.now(),
-      };
-      state.messages = [...state.messages, newMessage];
-      return state; // In real app, this would likely be handled by backend emitting new state
-  };
+    // Helper to add system messages to the subcollection
+    const addSystemMessage = async (gameId: string, text: string): Promise<void> => {
+         if (!text) return;
+         try {
+            const messagesColRef = collection(db, "games", gameId, "messages");
+            await addDoc(messagesColRef, {
+                senderUid: 'system',
+                senderUsername: 'System',
+                text: text,
+                timestamp: serverTimestamp(),
+            });
+         } catch (error) {
+             console.error("Error adding system message:", error);
+             // Optionally notify user
+         }
+    };
 
-  // Helper to add user messages (modify for WebSocket emit)
-   const addUserMessage = (text: string) => {
-       if (!gameState || !currentUserInfo || !text.trim()) return;
+    // Add user messages to the subcollection
+    const addUserMessage = async (text: string) => {
+        if (!gameState || !currentUser || !currentUserProfile || !text.trim()) return;
 
-       const newMessage: Message = {
-           id: `m${Date.now()}`,
-           sender: currentUserInfo.username,
-           text: text.trim(),
-           timestamp: Date.now(),
-       };
+        const newMessageData = {
+            senderUid: currentUser.uid,
+            senderUsername: currentUserProfile.username, // Use fetched profile username
+            text: text.trim(),
+            timestamp: serverTimestamp(),
+        };
 
-       // --- Placeholder for emitting message via WebSocket ---
-       console.log("Sending message:", newMessage);
-       // socket.emit('sendMessage', { gameId, message: newMessage });
-       const newState = { ...gameState, messages: [...gameState.messages, newMessage] };
-       setGameState(newState); // Optimistic update
-       // --- End Placeholder ---
-
-       setMessageInput('');
-   };
+        try {
+            const messagesColRef = collection(db, "games", gameId, "messages");
+            await addDoc(messagesColRef, newMessageData);
+            setMessageInput(''); // Clear input only on success
+        } catch (error) {
+             console.error("Error sending message:", error);
+             toast({ title: "Send Error", description: "Could not send message.", variant: "destructive"});
+        }
+    };
 
    const handleSendMessage = (e?: React.FormEvent) => {
        e?.preventDefault();
-       addUserMessage(messageInput);
+       if(gameState?.phase === 'discussion' && (isPlayer || isJudge)) {
+           addUserMessage(messageInput);
+       } else {
+            toast({title:"Cannot Send", description:"Chat is only active during discussion.", variant:"destructive"})
+       }
    };
 
 
    // Handle Subject Submission (Human Judge or AI)
    const handleSubjectSubmit = async (e?: React.FormEvent) => {
        e?.preventDefault();
-       if (!gameState || gameState.phase !== 'subject-selection') return;
+       if (!gameState || !currentUser || gameState.phase !== 'subject-selection') return;
 
        let subject = '';
+       let updateData: Partial<GameState> = {};
+
        if (gameState.judgeType === 'human' && isJudge) {
            subject = subjectInput.trim();
            if (!subject) {
                toast({ title: "Error", description: "Please enter a subject.", variant: "destructive" });
                return;
            }
-       } else if (gameState.judgeType === 'ai' && (isJudge || isPlayer)) { // Allow any player to trigger AI generation if AI judge
+           updateData = { currentSubject: subject, phase: 'discussion', lastUpdated: serverTimestamp() };
+           addSystemMessage(gameId, `Subject for Round ${gameState.currentRound}: "${subject}". Players, discuss!`);
+
+       } else if (gameState.judgeType === 'ai' && (isJudge || isPlayer)) {
            setIsAiGenerating(true);
            try {
-               // Add optional topic later if needed: const result = await generateSubject({ topic: 'optional' });
                const result = await generateSubject({});
                subject = result.subject;
                toast({ title: "AI Generated Subject", description: `Subject: ${subject}` });
+               updateData = { currentSubject: subject, phase: 'discussion', lastUpdated: serverTimestamp() };
+                addSystemMessage(gameId, `AI Subject for Round ${gameState.currentRound}: "${subject}". Players, discuss!`);
            } catch (err) {
                console.error("AI Subject Generation Failed:", err);
                toast({ title: "AI Error", description: "Could not generate subject.", variant: "destructive" });
@@ -268,20 +355,22 @@ export default function GamePage() {
                setIsAiGenerating(false);
            }
        } else {
-           return; // Not allowed to submit
+           toast({ title: "Not Allowed", description: "Only the judge or players (for AI judge) can set the subject.", variant: "destructive"});
+           return;
        }
 
-       // --- Placeholder for updating game state via WebSocket ---
-       console.log("Submitting subject:", subject);
-       // socket.emit('submitSubject', { gameId, subject });
-       let newState = { ...gameState, currentSubject: subject, phase: 'discussion' as GamePhase };
-       newState = addSystemMessage(newState, `Subject for Round ${gameState.currentRound}: "${subject}". Players, discuss!`);
-       setGameState(newState); // Optimistic update
-       // --- End Placeholder ---
-       setSubjectInput('');
+        // Update Firestore
+        try {
+            const gameDocRef = doc(db, "games", gameId);
+            await updateDoc(gameDocRef, updateData);
+            setSubjectInput('');
+        } catch (error) {
+            console.error("Error submitting subject:", error);
+            toast({ title: "Error", description: "Could not update game with the subject.", variant: "destructive"});
+        }
    };
 
-    // Handle Answer Submission
+    // Handle Answer Submission (by human judge)
     const handleAnswerSubmit = async (e?: React.FormEvent) => {
         e?.preventDefault();
         if (!gameState || gameState.phase !== 'answering' || !isJudge || gameState.judgeType !== 'human') return;
@@ -292,99 +381,171 @@ export default function GamePage() {
             return;
         }
 
-        // --- Placeholder for updating game state via WebSocket ---
-        console.log("Submitting answer:", answer);
-        // socket.emit('submitAnswer', { gameId, answer });
-        let newState = { ...gameState, currentAnswer: answer, phase: 'evaluation' as GamePhase, evaluationResult: undefined };
-        newState = addSystemMessage(newState, `The Judge has submitted the final answer. Evaluating...`);
-        setGameState(newState); // Optimistic update
-        // --- End Placeholder ---
-        setAnswerInput('');
-
-        // Trigger AI Evaluation
-        await triggerAiEvaluation(newState.currentSubject!, answer);
+        try {
+             const gameDocRef = doc(db, "games", gameId);
+             await updateDoc(gameDocRef, {
+                 currentAnswer: answer,
+                 phase: 'evaluation',
+                 evaluationResult: null, // Clear previous evaluation
+                 lastUpdated: serverTimestamp(),
+             });
+             setAnswerInput('');
+             await addSystemMessage(gameId, `The Judge has submitted the final answer. Evaluating...`);
+             // AI Evaluation will be triggered by the phase change listener (or can be called directly)
+             triggerAiEvaluation(gameState.currentSubject!, answer); // Trigger evaluation immediately
+        } catch (error) {
+             console.error("Error submitting answer:", error);
+             toast({ title: "Error", description: "Could not submit the answer.", variant: "destructive"});
+        }
     };
 
    // Trigger AI evaluation
    const triggerAiEvaluation = async (subject: string, answer: string) => {
-        if(!gameState) return;
+        if(!subject || !answer) {
+            console.warn("Skipping evaluation: Subject or answer missing.");
+            // Maybe move game to next round?
+            return;
+        }
         setIsAiEvaluating(true);
         try {
             const result = await evaluateAccuracy({ subject, answer });
 
-            // --- Placeholder for updating game state with evaluation via WebSocket ---
-            console.log("AI Evaluation Result:", result);
-             // socket.emit('submitEvaluation', { gameId, evaluation: result });
-             let newState = { ...gameState, evaluationResult: result };
-             newState = addSystemMessage(newState, `AI Evaluation: Score ${result.accuracyScore}/100. Justification: ${result.justification}`);
+            // --- Update game state with evaluation result ---
+            const gameDocRef = doc(db, "games", gameId);
+            const currentGameState = (await getDoc(gameDocRef)).data() as GameState; // Get fresh state
 
-             // Add score logic here - simplistic example: add score to judge if human judge, split between players if AI judge
-              const scoreToAdd = Math.round(result.accuracyScore / 10); // Example scoring
-              let updatedScores = { ...newState.scores };
+            if (!currentGameState) throw new Error("Game state not found for evaluation update.");
 
-              if (newState.judgeType === 'human' && judgePlayer) {
-                    updatedScores[judgePlayer.id] = (updatedScores[judgePlayer.id] || 0) + scoreToAdd;
-              } else { // AI Judge - split score between players
-                    newState.players.forEach(p => {
-                        if (p.role === 'player1' || p.role === 'player2') {
-                             updatedScores[p.id] = (updatedScores[p.id] || 0) + Math.round(scoreToAdd / 2);
-                        }
-                    });
-              }
-               newState.scores = updatedScores;
-               newState = addSystemMessage(newState, `Scores updated.`);
+             // Calculate scores
+             const scoreToAdd = Math.round(result.accuracyScore / 10);
+             let updatedScores = { ...(currentGameState.scores || {}) };
 
-             // Move to next phase or end game
-             if (newState.currentRound >= newState.maxRounds) {
-                newState.phase = 'finished';
-                 newState = addSystemMessage(newState, `Game Over! Final Scores: ${JSON.stringify(newState.scores)}`);
-             } else {
-                newState.phase = 'subject-selection';
-                newState.currentRound += 1;
-                newState.currentSubject = null;
-                newState.currentAnswer = null;
-                newState.evaluationResult = undefined;
-                 newState = addSystemMessage(newState, `Round ${newState.currentRound} begins! Waiting for the subject.`);
+             if (currentGameState.judgeType === 'human' && currentGameState.judgeId) {
+                 updatedScores[currentGameState.judgeId] = (updatedScores[currentGameState.judgeId] || 0) + scoreToAdd;
+             } else { // AI Judge - split score between players
+                 currentGameState.players.forEach(p => {
+                     if (p.role === 'player1' || p.role === 'player2') {
+                         updatedScores[p.uid] = (updatedScores[p.uid] || 0) + Math.round(scoreToAdd / 2);
+                     }
+                 });
              }
 
-             setGameState(newState);
-             // --- End Placeholder ---
+             // Determine next phase
+             const nextRound = currentGameState.currentRound + 1;
+             const nextPhase = nextRound > currentGameState.maxRounds ? 'finished' : 'subject-selection';
+
+             await updateDoc(gameDocRef, {
+                 evaluationResult: result, // Store the full result
+                 scores: updatedScores,
+                 phase: nextPhase,
+                 currentRound: nextPhase === 'subject-selection' ? nextRound : currentGameState.currentRound, // Only increment if not finished
+                 // Clear fields for next round if applicable
+                 ...(nextPhase === 'subject-selection' && {
+                     currentSubject: null,
+                     currentAnswer: null,
+                 }),
+                 lastUpdated: serverTimestamp(),
+             });
+
+             await addSystemMessage(gameId, `AI Evaluation: Score ${result.accuracyScore}/100. Justification: ${result.justification}`);
+              await addSystemMessage(gameId, `Scores updated.`);
+
+             if (nextPhase === 'finished') {
+                 await addSystemMessage(gameId, `Game Over! Final Scores: ${JSON.stringify(updatedScores)}`);
+             } else {
+                 await addSystemMessage(gameId, `Round ${nextRound} begins! Waiting for the subject.`);
+             }
 
         } catch (err) {
             console.error("AI Evaluation Failed:", err);
             toast({ title: "AI Error", description: "Could not evaluate the answer.", variant: "destructive" });
-             // Allow manual progression or retry? For now, just log error.
-             // Maybe set phase back to answering or add a manual override button?
+            // Consider how to handle evaluation failure (e.g., allow manual score, retry?)
+             // For now, maybe just move to next round manually? Add a button?
+             // Or set phase back? Let's move to next round for simplicity, but log error.
+             try {
+                const gameDocRef = doc(db, "games", gameId);
+                 const currentGameState = (await getDoc(gameDocRef)).data() as GameState;
+                 if(currentGameState && currentGameState.phase === 'evaluation') {
+                     const nextRound = currentGameState.currentRound + 1;
+                     const nextPhase = nextRound > currentGameState.maxRounds ? 'finished' : 'subject-selection';
+                     await updateDoc(gameDocRef, {
+                         phase: nextPhase,
+                         currentRound: nextPhase === 'subject-selection' ? nextRound : currentGameState.currentRound,
+                          ...(nextPhase === 'subject-selection' && { currentSubject: null, currentAnswer: null, evaluationResult: null }),
+                          lastUpdated: serverTimestamp(),
+                     });
+                     await addSystemMessage(gameId, "AI evaluation failed. Moving to next round.");
+                 }
+             } catch (error) {
+                 console.error("Error advancing round after evaluation failure:", error);
+             }
+
         } finally {
             setIsAiEvaluating(false);
         }
    };
 
-   // TEMP: Manual button to advance discussion to answering (for testing)
-   const advanceToAnswering = () => {
+   // Advance discussion to answering phase
+   const advanceToAnswering = async () => {
        if (!gameState || gameState.phase !== 'discussion') return;
-        // --- Placeholder for updating game state via WebSocket ---
-        console.log("Advancing to answering phase");
-        // socket.emit('advancePhase', { gameId, phase: 'answering' });
-        let newState = { ...gameState, phase: 'answering' as GamePhase };
-        newState = addSystemMessage(newState, `Discussion ended. Waiting for the final answer from the ${gameState.judgeType === 'human' ? 'Judge' : 'players'}.`); // Adjust message later for AI answer consolidation
-        setGameState(newState); // Optimistic update
-        // --- End Placeholder ---
 
-        // If AI judge, automatically trigger evaluation (using consolidated discussion - needs implementation)
-        if(gameState.judgeType === 'ai'){
-            // TODO: Implement logic to get 'final answer' from player discussion for AI judge
-            const consolidatedAnswer = "Placeholder answer derived from chat"; // Replace this
-            newState = { ...gameState, currentAnswer: consolidatedAnswer };
-            setGameState(newState);
-            triggerAiEvaluation(gameState.currentSubject!, consolidatedAnswer);
+        try {
+             const gameDocRef = doc(db, "games", gameId);
+             await updateDoc(gameDocRef, {
+                 phase: 'answering',
+                 lastUpdated: serverTimestamp(),
+             });
+             await addSystemMessage(gameId, `Discussion ended. Waiting for the final answer from the ${gameState.judgeType === 'human' ? 'Judge' : 'AI'}.`);
+
+             // If AI judge, automatically trigger evaluation (needs consolidated answer)
+             if (gameState.judgeType === 'ai' && gameState.currentSubject) {
+                 // TODO: Implement actual consolidation logic
+                 // Fetch recent messages, send to an AI prompt to summarize, get the answer.
+                 const consolidatedAnswer = "Placeholder answer derived from chat (AI Judge)"; // Replace this
+
+                 await updateDoc(gameDocRef, { currentAnswer: consolidatedAnswer }); // Store AI's answer
+                  // Now trigger evaluation
+                  triggerAiEvaluation(gameState.currentSubject, consolidatedAnswer);
+             }
+
+        } catch (error) {
+            console.error("Error advancing to answering phase:", error);
+            toast({ title: "Error", description: "Could not advance the game phase.", variant: "destructive"});
         }
    };
+
+   // Handle Leaving Game
+    const handleLeaveGame = async () => {
+        if (!currentUser || !gameState) return;
+        setIsLeaving(true);
+        try {
+            const gameDocRef = doc(db, "games", gameId);
+            // Remove player from the players array in Firestore
+            const playerToRemove: Player | undefined = gameState.players.find(p => p.uid === currentUser.uid);
+            if (playerToRemove) {
+                await updateDoc(gameDocRef, {
+                    players: arrayRemove(playerToRemove) // Use the whole object for removal if it's structured
+                    // Or if just storing UIDs: players: arrayRemove(currentUser.uid)
+                });
+                await addSystemMessage(gameId, `${currentUserProfile?.username || 'A player'} left the game.`);
+                 // Add logic: If judge leaves, maybe end game or assign new judge?
+                 // If player leaves, maybe end game if not enough players?
+            }
+             toast({ title: "Left Game", description: "You have left the game.", variant: "default"});
+            router.push('/lobby');
+
+        } catch (error) {
+            console.error("Error leaving game:", error);
+            toast({ title: "Error", description: "Could not leave the game.", variant: "destructive"});
+             setIsLeaving(false); // Only set false on error
+        }
+        // No need to set setIsLeaving(false) on success due to navigation
+    };
 
 
   // --- Rendering ---
 
-  if (isLoading) {
+  if (isLoading || !currentUser || !currentUserProfile) {
     return <div className="flex justify-center items-center min-h-[calc(100vh-10rem)]"><Loader2 className="h-12 w-12 animate-spin text-primary" /></div>;
   }
 
@@ -403,26 +564,26 @@ export default function GamePage() {
   }
 
   const renderPlayer = (player: Player) => (
-    <div key={player.id} className="flex items-center gap-2 p-2 bg-secondary rounded">
+    <div key={player.uid} className="flex items-center gap-2 p-2 bg-secondary rounded">
       <Avatar className="h-8 w-8">
         <AvatarImage src={player.avatarUrl} alt={player.username} data-ai-hint="user avatar"/>
-        <AvatarFallback>{player.username.substring(0, 1)}</AvatarFallback>
+        <AvatarFallback>{player.username.substring(0, 1).toUpperCase()}</AvatarFallback>
       </Avatar>
       <div className="flex-1">
-        <p className="text-sm font-medium truncate">{player.username} {player.id === currentUserInfo?.userId ? '(You)' : ''}</p>
+        <p className="text-sm font-medium truncate">{player.username} {player.uid === currentUser?.uid ? '(You)' : ''}</p>
         <Badge variant={player.role === 'judge' ? 'default' : 'secondary'} className="text-xs">
-          {player.role === 'judge' ? <Crown className="h-3 w-3 mr-1"/> : <UserCheck className="h-3 w-3 mr-1"/> }
+          {player.role === 'judge' ? <Crown className="h-3 w-3 mr-1"/> : player.role === 'spectator' ? null : <UserCheck className="h-3 w-3 mr-1"/> }
           {player.role.charAt(0).toUpperCase() + player.role.slice(1)}
         </Badge>
       </div>
-       <p className="text-xs font-bold">{gameState.scores[player.id] || 0} pts</p>
+       <p className="text-xs font-bold">{gameState.scores?.[player.uid] || 0} pts</p>
     </div>
   );
 
   const renderPhaseContent = () => {
     switch (gameState.phase) {
       case 'waiting':
-        return <p className="text-center text-muted-foreground p-4">Waiting for players... ({gameState.players.length}/3)</p>;
+        return <p className="text-center text-muted-foreground p-4">Waiting for players... ({gameState.players.length}/{gameState.maxPlayers})</p>;
 
       case 'subject-selection':
          if (gameState.judgeType === 'human') {
@@ -430,31 +591,37 @@ export default function GamePage() {
                  <form onSubmit={handleSubjectSubmit} className="p-4 space-y-2">
                     <Label htmlFor="subject">Enter the Subject for Round {gameState.currentRound}:</Label>
                     <Input id="subject" value={subjectInput} onChange={(e) => setSubjectInput(e.target.value)} placeholder="e.g., The History of Pizza" />
-                    <Button type="submit" className="w-full">Submit Subject</Button>
+                    <Button type="submit" className="w-full" disabled={isLoading}>Submit Subject</Button>
                  </form>
              ) : (
-                  <p className="text-center text-muted-foreground p-4">Waiting for the Judge ({judgePlayer?.username}) to select a subject...</p>
+                  <p className="text-center text-muted-foreground p-4">Waiting for the Judge ({judgePlayer?.username || '...'}) to select a subject...</p>
              );
          } else { // AI Judge
-              return (
+              // Allow any player to trigger generation
+              return (isPlayer || isJudge) ? (
                   <div className="p-4 text-center">
-                     <p className="text-muted-foreground mb-2">AI Judge is selecting the subject for Round {gameState.currentRound}...</p>
-                     <Button onClick={() => handleSubjectSubmit()} disabled={isAiGenerating} className="mx-auto">
+                     <p className="text-muted-foreground mb-2">AI Judge will select the subject for Round {gameState.currentRound}.</p>
+                     <Button onClick={() => handleSubjectSubmit()} disabled={isAiGenerating || isLoading} className="mx-auto">
                           {isAiGenerating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <BrainCircuit className="mr-2 h-4 w-4" />}
                           {isAiGenerating ? 'Generating...' : 'Generate Subject Now'}
                       </Button>
                   </div>
+              ) : (
+                   <p className="text-center text-muted-foreground p-4">AI Judge is selecting the subject...</p>
               );
          }
 
       case 'discussion':
         return (
             <div className="p-4 space-y-2">
-                <p className="font-semibold">Subject: <span className="font-normal text-primary">{gameState.currentSubject}</span></p>
-                <p className="text-sm text-muted-foreground">Discuss the subject and ask clarifying questions.</p>
-                 {/* Add a timer here later */}
-                 {/* TEMP button to advance phase */}
-                 {(isJudge || isPlayer) && <Button onClick={advanceToAnswering} variant="outline" size="sm">End Discussion & Proceed to Answer</Button>}
+                <p className="font-semibold">Subject: <span className="font-normal text-primary">{gameState.currentSubject || '...'}</span></p>
+                <p className="text-sm text-muted-foreground">Discuss the subject and formulate your answer.</p>
+                 {/* TODO: Add a timer */}
+                 {(isJudge || isPlayer) && ( // Allow judge or players to end discussion
+                      <Button onClick={advanceToAnswering} variant="outline" size="sm" disabled={isLoading}>
+                          End Discussion & Proceed to Answer
+                      </Button>
+                 )}
             </div>
         );
 
@@ -464,18 +631,20 @@ export default function GamePage() {
                  <form onSubmit={handleAnswerSubmit} className="p-4 space-y-2">
                     <Label htmlFor="answer">Enter the Final Answer based on discussion:</Label>
                     <Textarea id="answer" value={answerInput} onChange={(e) => setAnswerInput(e.target.value)} placeholder="Consolidated answer..." />
-                    <Button type="submit" className="w-full" disabled={isAiEvaluating}>
+                    <Button type="submit" className="w-full" disabled={isAiEvaluating || isLoading}>
                         {isAiEvaluating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                         Submit Answer & Evaluate
                      </Button>
                  </form>
              ) : (
-                 <p className="text-center text-muted-foreground p-4">Waiting for the Judge ({judgePlayer?.username}) to submit the final answer...</p>
+                 <p className="text-center text-muted-foreground p-4">Waiting for the Judge ({judgePlayer?.username || '...'}) to submit the final answer...</p>
              );
          } else { // AI Judge
              return (
-                 <p className="text-center text-muted-foreground p-4">AI Judge is compiling the answer based on your discussion and evaluating...</p>
-                 // Show loader if isAiEvaluating is true
+                 <p className="text-center text-muted-foreground p-4">
+                    {isAiEvaluating ? <Loader2 className="inline h-4 w-4 mr-2 animate-spin" /> : null }
+                    AI Judge is compiling the answer based on discussion and evaluating...
+                 </p>
              );
          }
 
@@ -494,7 +663,7 @@ export default function GamePage() {
                     <p>Answer: <span className="text-secondary-foreground">{gameState.currentAnswer}</span></p>
                     <p className="mt-2">Accuracy Score: <span className="text-2xl font-bold text-primary">{gameState.evaluationResult.score}/100</span></p>
                     <p className="text-sm text-muted-foreground mt-1">Justification: {gameState.evaluationResult.justification}</p>
-                    {/* Button to proceed might be needed if auto-advance fails */}
+                    {/* Auto-advance usually handles this, button only needed for manual override */}
                   </>
               ) : (
                    <p className="text-muted-foreground">Waiting for evaluation results...</p>
@@ -504,18 +673,18 @@ export default function GamePage() {
         );
 
       case 'finished':
-          const winner = Object.entries(gameState.scores).sort(([,a],[,b]) => b-a)[0];
-          const winnerPlayer = gameState.players.find(p => p.id === winner[0]);
+          const winnerEntry = Object.entries(gameState.scores || {}).sort(([,a],[,b]) => b-a)[0];
+          const winnerPlayer = gameState.players.find(p => p.uid === winnerEntry?.[0]);
           return (
               <div className="p-4 space-y-2 text-center">
                 <p className="font-bold text-2xl text-primary">Game Over!</p>
                 <p>Final Scores:</p>
                 <ul className="list-none p-0">
                     {gameState.players.map(p => (
-                        <li key={p.id}>{p.username}: {gameState.scores[p.id] || 0} pts</li>
+                        <li key={p.uid}>{p.username}: {gameState.scores?.[p.uid] || 0} pts</li>
                     ))}
                 </ul>
-                 {winnerPlayer && <p className="mt-4 font-semibold">Winner: {winnerPlayer.username} with {winner[1]} points! <Crown className="inline h-5 w-5 text-yellow-500"/></p>}
+                 {winnerPlayer && <p className="mt-4 font-semibold">Winner: {winnerPlayer.username} with {winnerEntry[1]} points! <Crown className="inline h-5 w-5 text-yellow-500"/></p>}
                 <Button onClick={() => router.push('/lobby')} className="mt-4">Back to Lobby</Button>
               </div>
           );
@@ -534,33 +703,34 @@ export default function GamePage() {
           <CardDescription>{gameState.name}</CardDescription>
            <div className="pt-2 space-y-1">
             <p className="text-sm font-medium">Round: {gameState.currentRound}/{gameState.maxRounds}</p>
-            <Progress value={(gameState.currentRound / gameState.maxRounds) * 100} className="h-2" />
-             <p className="text-sm font-medium">Phase: <span className="text-primary">{gameState.phase.replace('-', ' ')}</span></p>
+            <Progress value={gameState.phase === 'finished' ? 100 : ((gameState.currentRound -1) / gameState.maxRounds) * 100} className="h-2" />
+             <p className="text-sm font-medium">Phase: <span className="text-primary capitalize">{gameState.phase.replace('-', ' ')}</span></p>
              <p className="text-sm font-medium">Judge: <span className="text-primary">{gameState.judgeType === 'ai' ? 'AI' : judgePlayer?.username || 'N/A'}</span></p>
            </div>
         </CardHeader>
         <CardContent className="flex-grow space-y-2 overflow-y-auto">
             {gameState.players.map(renderPlayer)}
-             {gameState.players.length < 3 && gameState.phase === 'waiting' && (
+             {gameState.players.length < gameState.maxPlayers && gameState.phase === 'waiting' && (
                  <div className="text-center p-4 border border-dashed rounded text-muted-foreground">Waiting for more players...</div>
+             )}
+             {gameState.players.length === 0 && gameState.phase !== 'waiting' && (
+                  <div className="text-center p-4 border border-dashed rounded text-destructive">No players remaining.</div>
              )}
         </CardContent>
          <CardFooter className="p-2 border-t">
-              <Button variant="outline" size="sm" onClick={() => router.push('/lobby')}>Leave Game</Button>
+              <Button variant="outline" size="sm" onClick={handleLeaveGame} disabled={isLeaving}>
+                   {isLeaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <LogOut className="mr-2 h-4 w-4"/>}
+                   Leave Game
+              </Button>
         </CardFooter>
       </Card>
 
       {/* Main Game Area (Chat & Phase Content) */}
       <Card className="lg:col-span-2 flex flex-col shadow-lg h-full">
         <CardHeader className="flex-shrink-0">
-           <CardTitle className="flex items-center gap-2 text-xl">
-                {gameState.phase === 'discussion' || gameState.phase === 'waiting' ? 'Chat & Discussion' :
-                 gameState.phase === 'subject-selection' ? 'Subject Selection' :
-                 gameState.phase === 'answering' ? 'Final Answer Submission' :
-                 gameState.phase === 'evaluation' ? 'Round Evaluation' :
-                 gameState.phase === 'finished' ? 'Game Results' :
-                 'Game Area'}
-                 {gameState.phase === 'discussion' && gameState.currentSubject && <HelpCircle className="h-4 w-4 text-muted-foreground"/>}
+           <CardTitle className="flex items-center gap-2 text-xl capitalize">
+                {gameState.phase.replace('-', ' ')}
+                {gameState.phase === 'discussion' && gameState.currentSubject && <HelpCircle className="h-4 w-4 text-muted-foreground"/>}
            </CardTitle>
         </CardHeader>
 
@@ -569,39 +739,52 @@ export default function GamePage() {
             {renderPhaseContent()}
         </div>
 
-        {/* Chat Area (Visible during discussion and other relevant phases) */}
-        {(gameState.phase === 'discussion' || gameState.phase === 'subject-selection' || gameState.phase === 'answering' || gameState.phase === 'waiting') && (
+        {/* Chat Area (Always visible except maybe 'finished') */}
+        {gameState.phase !== 'finished' && (
            <>
-             <ScrollArea className="flex-grow p-4 space-y-3">
-                {gameState.messages.map((msg) => (
-                <div key={msg.id} className={`flex ${msg.sender === currentUserInfo?.username ? 'justify-end' : ''} ${msg.sender === 'System' || msg.sender === 'AI Judge' ? 'justify-center' : ''}`}>
-                    <div className={`p-2 rounded-lg max-w-[75%] ${
-                        msg.sender === currentUserInfo?.username ? 'bg-primary text-primary-foreground' :
-                        msg.sender === 'System' ? 'bg-transparent text-muted-foreground italic text-xs text-center w-full' :
-                        msg.sender === 'AI Judge' ? 'bg-purple-800 text-purple-100' :
-                        'bg-secondary text-secondary-foreground'
+             <ScrollArea ref={scrollAreaRef} className="flex-grow p-4 space-y-3">
+                {messages.map((msg) => (
+                <div key={msg.id} className={`flex mb-2 ${
+                     msg.senderUid === currentUser?.uid ? 'justify-end' :
+                     msg.senderUid === 'system' || msg.senderUid === 'ai-judge' ? 'justify-center' : 'justify-start' // Align left for others
                     }`}>
-                    {msg.sender !== 'System' && msg.sender !== currentUserInfo?.username && <p className="text-xs font-semibold mb-0.5 opacity-80">{msg.sender}</p>}
+                    <div className={`p-2 rounded-lg max-w-[75%] shadow-sm ${
+                        msg.senderUid === currentUser?.uid ? 'bg-primary text-primary-foreground' :
+                        msg.senderUid === 'system' ? 'bg-transparent text-muted-foreground italic text-xs text-center w-full' :
+                        msg.senderUid === 'ai-judge' ? 'bg-purple-800 text-purple-100' : // Keep AI judge style
+                        'bg-secondary text-secondary-foreground' // Default for other users
+                    }`}>
+                    {msg.senderUid !== 'system' && msg.senderUid !== currentUser?.uid && <p className="text-xs font-semibold mb-0.5 opacity-80">{msg.senderUsername}</p>}
                     <p className="text-sm whitespace-pre-wrap break-words">{msg.text}</p>
-                    {/* <p className="text-xs opacity-60 mt-1 text-right">{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p> */}
+                    {/* Optional Timestamp display */}
+                    {/* <p className="text-xs opacity-60 mt-1 text-right">
+                       {msg.timestamp instanceof Timestamp ? format(msg.timestamp.toDate(), 'p') : '...'}
+                    </p> */}
                     </div>
                 </div>
                 ))}
+                 {/* Add an empty div at the bottom to ensure scroll pushes content up */}
+                {/* <div ref={messagesEndRef} /> */}
              </ScrollArea>
              <CardFooter className="p-4 border-t flex-shrink-0">
                 <form onSubmit={handleSendMessage} className="flex w-full gap-2">
                 <Input
-                    placeholder={isPlayer || isJudge ? "Type your message..." : "Spectating..."}
+                    placeholder={currentUserRole === 'spectator' ? "Spectating..." : gameState.phase === 'discussion' ? "Type your message..." : "Chat disabled"}
                     value={messageInput}
                     onChange={(e) => setMessageInput(e.target.value)}
-                    disabled={gameState.phase !== 'discussion' || (!isPlayer && !isJudge) || isLoading}
+                    disabled={gameState.phase !== 'discussion' || currentUserRole === 'spectator' || isLoading || isAiGenerating || isAiEvaluating}
                 />
-                <Button type="submit" disabled={gameState.phase !== 'discussion' || (!isPlayer && !isJudge) || isLoading || !messageInput.trim()}>
+                <Button type="submit"
+                    disabled={gameState.phase !== 'discussion' || currentUserRole === 'spectator' || isLoading || isAiGenerating || isAiEvaluating || !messageInput.trim()}>
                     <Send className="h-4 w-4" />
                 </Button>
                 </form>
              </CardFooter>
            </>
+        )}
+         {/* Show simplified view for finished state */}
+        {gameState.phase === 'finished' && (
+             <div className="flex-grow p-4">{renderPhaseContent()}</div>
         )}
       </Card>
     </div>
