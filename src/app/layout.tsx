@@ -26,15 +26,18 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark"><body // Ensure dark mode is applied and no whitespace
+    <html lang="en" className="dark">
+      <body // Ensure dark mode is applied and no whitespace
         className={cn(
           `${geistSans.variable} ${geistMono.variable} antialiased flex flex-col min-h-screen`,
           "bg-background text-foreground" // Apply theme colors directly
         )}
       >
         <Header />
-        <main className="flex-grow container mx-auto px-4 py-8">{children}</main>
+        {/* Added pt-16 (approx header height) to main to prevent overlap with sticky header */}
+        <main className="flex-grow container mx-auto px-4 py-8 pt-16 md:pt-8">{children}</main>
         <Toaster />
-      </body></html>
+      </body>
+    </html>
   );
 }
