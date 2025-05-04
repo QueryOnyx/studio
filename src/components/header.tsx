@@ -1,44 +1,45 @@
-'use client'; // Since we might use hooks for auth status later
+'use client';
 
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
-import { User, LogOut, Users, Sword } from 'lucide-react'; // Added Sword for game icon
-import { useState, useEffect } from 'react'; // Placeholder for auth state
-import { useRouter, usePathname } from 'next/navigation'; // Added usePathname
-import { cn } from '@/lib/utils'; // Import cn utility
+import { User, LogOut, Users, Sword } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { useRouter, usePathname } from 'next/navigation';
+import { cn } from '@/lib/utils';
 
 export default function Header() {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  // Initialize state to null/undefined to avoid hydration mismatch
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
   const [username, setUsername] = useState<string | null>(null);
+  const [isClient, setIsClient] = useState(false); // Track if running on client
   const router = useRouter();
-  const pathname = usePathname(); // Get the current path
+  const pathname = usePathname();
 
+  // This effect runs only on the client after hydration
   useEffect(() => {
-    // Check auth status on mount/re-render if needed
+    setIsClient(true); // Component has mounted on the client
+
+    // Check auth status from localStorage
     const storedAuth = localStorage.getItem('isAuthenticated');
     const storedUser = localStorage.getItem('username');
 
     if (storedAuth === 'true' && storedUser) {
-      // User is authenticated
       setIsAuthenticated(true);
       setUsername(storedUser);
-
       // If authenticated and currently on the root or auth page, redirect to lobby
       if (pathname === '/' || pathname === '/auth') {
         router.push('/lobby');
       }
     } else {
-      // User is not authenticated
       setIsAuthenticated(false);
-      setUsername(null); // Clear username if not authenticated
-
+      setUsername(null);
       // If not authenticated and not already on auth page, redirect
+      // Ensure we are not already on the auth page to prevent infinite loop
       if (pathname !== '/auth') {
         router.push('/auth');
       }
     }
-    // Dependency array ensures this runs when pathname changes, or on initial mount.
-  }, [pathname, router]); // Run when path changes or router object is available
+  }, [pathname, router]); // Rerun if pathname or router changes
 
 
   const handleLogout = () => {
@@ -56,12 +57,12 @@ export default function Header() {
   return (
     <header className="bg-card text-card-foreground shadow-md sticky top-0 z-50">
       <nav className="container mx-auto flex items-center justify-between px-4 py-3">
-        {/* Keep the brand link */}
          <Link href={isAuthenticated ? "/lobby" : "/auth"} className="text-xl font-bold text-primary hover:text-primary/90 transition-colors">
           Triad Trials <Sword className="inline h-5 w-5 ml-1" />
         </Link>
         <div className="flex items-center gap-2 md:gap-4">
-          {isAuthenticated && username ? ( // Only show if authenticated and username exists
+          {/* Only render buttons after client-side check is complete and user is authenticated */}
+          {isClient && isAuthenticated && username ? (
             <>
               <Button
                 variant={isActive('/lobby') ? 'secondary' : 'ghost'} // Active style
@@ -94,6 +95,8 @@ export default function Header() {
               </Button>
             </>
           ) : null }
+          {/* Optionally show a placeholder or nothing while loading client state */}
+           {!isClient && <div className="h-9 w-32"></div>} {/* Placeholder to prevent layout shift */}
         </div>
       </nav>
     </header>
