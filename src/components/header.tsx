@@ -2,13 +2,15 @@
 
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
-import { User, LogIn, LogOut, Users, Sword } from 'lucide-react'; // Added Sword for game icon
+import { User, LogOut, Users, Sword } from 'lucide-react'; // Added Sword for game icon
 import { useState, useEffect } from 'react'; // Placeholder for auth state
+import { useRouter } from 'next/navigation';
 
 export default function Header() {
   // Placeholder for authentication status. Replace with actual auth logic.
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [username, setUsername] = useState<string | null>(null);
+  const router = useRouter();
 
   useEffect(() => {
     // Simulate checking auth status on mount
@@ -18,8 +20,10 @@ export default function Header() {
     if (storedAuth === 'true' && storedUser) {
         setIsAuthenticated(true);
         setUsername(storedUser);
+    } else {
+        setIsAuthenticated(false); // Explicitly set to false if not authenticated
     }
-  }, []);
+  }, []); // Check only on mount
 
 
   const handleLogout = () => {
@@ -28,13 +32,14 @@ export default function Header() {
      localStorage.removeItem('username');
      setIsAuthenticated(false);
      setUsername(null);
-     // Potentially redirect to home or login page
+     router.push('/auth'); // Redirect to auth page on logout
   };
 
   return (
     <header className="bg-secondary text-secondary-foreground shadow-md">
       <nav className="container mx-auto flex items-center justify-between px-4 py-3">
-        <Link href="/" className="text-xl font-bold text-primary hover:text-primary/90 transition-colors">
+        {/* Keep the brand link, but maybe disable it if not logged in? For now, just link */}
+         <Link href={isAuthenticated ? "/lobby" : "/auth"} className="text-xl font-bold text-primary hover:text-primary/90 transition-colors">
           Triad Trials <Sword className="inline h-5 w-5 ml-1" />
         </Link>
         <div className="flex items-center gap-4">
@@ -55,11 +60,8 @@ export default function Header() {
               </Button>
             </>
           ) : (
-            <Button variant="default" size="sm" asChild>
-              <Link href="/auth">
-                <LogIn className="mr-2 h-4 w-4" /> Login / Sign Up
-              </Link>
-            </Button>
+            // No button shown when not authenticated, as /auth is the entry point
+             null
           )}
         </div>
       </nav>
