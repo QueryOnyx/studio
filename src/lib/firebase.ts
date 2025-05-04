@@ -2,19 +2,18 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
-import { getAnalytics } from "firebase/analytics"; // Import Analytics
+import { getAnalytics, isSupported } from "firebase/analytics"; // Import Analytics and isSupported
 
-// Your web app's Firebase configuration
+// Firebase configuration read from environment variables
 const firebaseConfig = {
-  apiKey: "AIzaSyCkDho-SiStH1uVDBff6hLlvUOkjVw5yiY",
-  authDomain: "queryonyx-bf737.firebaseapp.com",
-  projectId: "queryonyx-bf737",
-  storageBucket: "queryonyx-bf737.appspot.com", // Corrected domain if using default bucket
-  messagingSenderId: "13403249278",
-  appId: "1:13403249278:web:3c479c11d89c67dea4162f",
-  measurementId: "G-SM9KSLTXYC"
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+  measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID
 };
-
 
 // Initialize Firebase
 let app;
@@ -26,10 +25,17 @@ if (!getApps().length) {
 
 const auth = getAuth(app);
 const db = getFirestore(app);
+
+// Initialize Analytics only if supported (runs in browser)
 let analytics;
-// Check if window is defined (running in browser) before initializing Analytics
 if (typeof window !== 'undefined') {
-  analytics = getAnalytics(app);
+    isSupported().then((supported) => {
+        if (supported) {
+            analytics = getAnalytics(app);
+        } else {
+            console.log("Firebase Analytics is not supported in this environment.");
+        }
+    });
 }
 
 
