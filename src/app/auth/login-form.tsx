@@ -46,37 +46,56 @@ export default function LoginForm({ onSuccess }: LoginFormProps) {
 
   async function onSubmit(values: z.infer<typeof formSchema>) {
     setIsLoading(true);
-    console.log("Login attempt:", values); // Keep console log for debugging
+    form.clearErrors(); // Clear previous errors
 
-    // --- Placeholder for MongoDB Authentication ---
-    // Replace this with actual API call to your backend
-    await new Promise(resolve => setTimeout(resolve, 1000)); // Simulate network delay
+    try {
+       const response = await fetch('/api/auth/login', {
+         method: 'POST',
+         headers: {
+           'Content-Type': 'application/json',
+         },
+         body: JSON.stringify({
+           username: values.username,
+           password: values.password,
+         }),
+       });
 
-    // Example success/failure (replace with actual backend response check)
-    const loginSuccess = values.username !== "fail"; // Simulate failure for username 'fail'
+       const data = await response.json();
 
-    setIsLoading(false);
+      if (response.ok) {
+        toast({
+          title: "Login Successful",
+          description: `Welcome back, ${values.username}!`,
+        });
+        // Store auth state (replace with proper session/token management later)
+        localStorage.setItem('isAuthenticated', 'true');
+        localStorage.setItem('username', values.username);
+        // Optionally store other user details if needed by the app immediately
+        // localStorage.setItem('userId', data.user._id); // Example if ID is returned
 
-    if (loginSuccess) {
-      toast({
-        title: "Login Successful",
-        description: `Welcome back, ${values.username}!`,
-      });
-      // Simulate setting auth state (replace with actual state management/token storage)
-      localStorage.setItem('isAuthenticated', 'true');
-      localStorage.setItem('username', values.username);
-      onSuccess(); // Call the onSuccess prop
-      router.push('/lobby'); // Redirect to lobby after successful login
-    } else {
-      toast({
-        title: "Login Failed",
-        description: "Invalid username or password.",
-        variant: "destructive",
-      });
-       form.setError("username", { type: "manual", message: "Invalid credentials" });
-       form.setError("password", { type: "manual", message: "Invalid credentials" });
+        onSuccess(); // Call the onSuccess prop (might be used for UI updates)
+        router.push('/lobby'); // Redirect to lobby after successful login
+      } else {
+        // Handle login failure
+        toast({
+          title: "Login Failed",
+          description: data.message || "Invalid username or password.",
+          variant: "destructive",
+        });
+        // Set errors on both fields for generic invalid credentials message
+        form.setError("username", { type: "manual", message: " " }); // Empty message to just show red border
+        form.setError("password", { type: "manual", message: data.message || "Invalid username or password." });
+      }
+    } catch (error) {
+        console.error("Login Network Error:", error);
+        toast({
+            title: "Login Failed",
+            description: "Could not connect to the server. Please try again later.",
+            variant: "destructive",
+        });
+    } finally {
+        setIsLoading(false);
     }
-    // --- End Placeholder ---
   }
 
   return (

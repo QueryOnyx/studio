@@ -51,32 +51,77 @@ export default function SignupForm({ onSuccess }: SignupFormProps) {
 
   async function onSubmit(values: z.infer<typeof formSchema>) {
     setIsLoading(true);
-    console.log("Signup attempt:", { username: values.username, email: values.email }); // Avoid logging passwords
+    form.clearErrors(); // Clear previous errors
 
-    // --- Placeholder for MongoDB User Creation ---
-    // Replace this with actual API call to your backend
-    await new Promise(resolve => setTimeout(resolve, 1000)); // Simulate network delay
-
-    // Example success/failure (replace with actual backend response check)
-    const signupSuccess = values.username !== "exists"; // Simulate failure if username 'exists'
-
-    setIsLoading(false);
-
-    if (signupSuccess) {
-      toast({
-        title: "Signup Successful",
-        description: "Your account has been created. Please log in.",
+    try {
+      const response = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          username: values.username,
+          email: values.email,
+          password: values.password,
+        }),
       });
-      onSuccess(); // Switch to login tab
-    } else {
+
+      const data = await response.json();
+
+      if (response.ok) {
+        toast({
+          title: "Signup Successful",
+          description: "Your account has been created. Please log in.",
+        });
+        onSuccess(); // Switch to login tab
+      } else {
+        // Handle specific errors from the API
+        if (response.status === 409) { // Conflict (user exists)
+           toast({
+             title: "Signup Failed",
+             description: data.message || "Username or email might already be taken.",
+             variant: "destructive",
+           });
+           if (data.message?.toLowerCase().includes('username')) {
+                form.setError("username", { type: "manual", message: data.message });
+           } else if (data.message?.toLowerCase().includes('email')) {
+                form.setError("email", { type: "manual", message: data.message });
+           } else {
+                 form.setError("username", { type: "manual", message: "Username or email might be taken" });
+           }
+        } else if (response.status === 400) { // Bad Request (validation)
+             toast({
+                title: "Signup Failed",
+                description: data.message || "Please check your input.",
+                variant: "destructive",
+            });
+            // Optionally display specific field errors from data.errors
+             if (data.errors) {
+                 data.errors.forEach((err: any) => {
+                    if(err.path && err.path.length > 0){
+                        form.setError(err.path[0] as keyof z.infer<typeof formSchema>, { type: 'manual', message: err.message });
+                    }
+                 });
+             }
+        }
+        else {
+          toast({
+            title: "Signup Failed",
+            description: data.message || "An unexpected error occurred.",
+            variant: "destructive",
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Signup Network Error:", error);
       toast({
         title: "Signup Failed",
-        description: "Username or email might already be taken.",
+        description: "Could not connect to the server. Please try again later.",
         variant: "destructive",
       });
-       form.setError("username", { type: "manual", message: "Username might be taken" });
+    } finally {
+      setIsLoading(false);
     }
-    // --- End Placeholder ---
   }
 
   return (
