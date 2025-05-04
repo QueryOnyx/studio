@@ -37,7 +37,12 @@ export default function ProfilePage() {
     setIsLoading(true);
     // Check authentication
     const storedUsername = localStorage.getItem('username');
-    if (localStorage.getItem('isAuthenticated') !== 'true' || !storedUsername) {
+    const isAuthenticated = localStorage.getItem('isAuthenticated') === 'true';
+
+    console.log("Profile Page Check:", { isAuthenticated, storedUsername }); // Debug log
+
+    if (!isAuthenticated || !storedUsername) {
+        console.log("Redirecting to /auth because check failed."); // Debug log
         toast({
             title: "Access Denied",
             description: "Please log in to view your profile.",
@@ -50,11 +55,13 @@ export default function ProfilePage() {
     // Fetch user data from API
     const fetchUserData = async (username: string) => {
       try {
+        console.log(`Fetching data for user: ${username}`); // Debug log
         // Note: Using GET with username in query param. Adjust if API uses POST or different structure.
         const response = await fetch(`/api/user/${username}`); // Adjust API endpoint if needed
         const data = await response.json();
 
         if (response.ok) {
+           console.log("User data fetched:", data.user); // Debug log
            // Format the joinDate before setting state
           const formattedJoinDate = data.user.joinDate
             ? format(new Date(data.user.joinDate), 'PPP') // 'PPP' gives format like "Jun 20th, 2023"
@@ -73,6 +80,7 @@ export default function ProfilePage() {
           setEditedUsername(profileData.username);
           setEditedEmail(profileData.email);
         } else {
+           console.error("API Error fetching profile:", data.message); // Debug log
           throw new Error(data.message || 'Failed to fetch profile data');
         }
       } catch (error: any) {
@@ -149,14 +157,12 @@ export default function ProfilePage() {
 
   // --- Error or No User State ---
   if (!user) {
+    // Avoid showing error briefly if just redirecting
+    // The redirect logic in useEffect handles the unauthorized case
     return (
         <div className="flex justify-center items-center min-h-[calc(100vh-10rem)]">
-             <Card className="w-full max-w-md text-center">
-                <CardHeader><CardTitle>Error</CardTitle></CardHeader>
-                <CardContent><p>Could not load user profile. Please try logging in again.</p>
-                 <Button onClick={() => router.push('/auth')} className="mt-4">Go to Login</Button>
-                </CardContent>
-             </Card>
+          {/* Keep loader or blank while redirecting */}
+           <Loader2 className="h-12 w-12 animate-spin text-primary" />
         </div>
     );
   }
