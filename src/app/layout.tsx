@@ -26,8 +26,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark"> {/* Ensure dark mode is applied */}
-      <body
+    <html lang="en" className="dark"><body // Ensure dark mode is applied and no whitespace
         className={cn(
           `${geistSans.variable} ${geistMono.variable} antialiased flex flex-col min-h-screen`,
           "bg-background text-foreground" // Apply theme colors directly
@@ -36,7 +35,6 @@ export default function RootLayout({
         <Header />
         <main className="flex-grow container mx-auto px-4 py-8">{children}</main>
         <Toaster />
-      </body>
-    </html>
+      </body></html>
   );
 }
